@@ -201,13 +201,32 @@ fi
 print_info "Building and starting Affiliation service..."
 docker compose up -d --build
 
-print_info "Waiting for services to be ready..."
-print_info "The entrypoint script will automatically run migrations and setup"
-sleep 15
+print_info "Waiting for database and migrations to complete..."
+print_info "This may take up to 60 seconds..."
+
+# Wait for the web service to be ready and migrations to complete
+max_attempts=30
+attempt=0
+while [ $attempt -lt $max_attempts ]; do
+    # Check if the auth_user table exists (created by Django migrations)
+    if docker compose exec -T web python manage.py shell -c "from django.contrib.auth import get_user_model; User = get_user_model(); User.objects.count()" > /dev/null 2>&1; then
+        print_success "Database migrations completed successfully!"
+        break
+    fi
+    attempt=$((attempt + 1))
+    echo -n "."
+    sleep 2
+done
+
+if [ $attempt -eq $max_attempts ]; then
+    print_error "Migrations failed to complete in time"
+    print_info "Checking logs..."
+    docker compose logs web | tail -20
+    exit 1
+fi
 
 print_info "Creating service accounts for microservice authentication..."
-# Wait a bit more for migrations to complete
-sleep 5
+sleep 2
 docker compose exec -T web python manage.py shell << 'PYTHON_EOF'
 from django.contrib.auth import get_user_model
 User = get_user_model()
