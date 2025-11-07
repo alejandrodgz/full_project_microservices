@@ -1,0 +1,115 @@
+package http
+
+import (
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"os"
+
+	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
+	docs "github.com/kristianrpo/auth-microservice/docs"
+	httpSwagger "github.com/swaggo/http-swagger"
+
+	"github.com/kristianrpo/auth-microservice/internal/adapters/http/handler/admin"
+	"github.com/kristianrpo/auth-microservice/internal/adapters/http/handler/auth"
+	"github.com/kristianrpo/auth-microservice/internal/adapters/http/handler/health"
+	"github.com/kristianrpo/auth-microservice/internal/adapters/http/handler/shared"
+	"github.com/kristianrpo/auth-microservice/internal/adapters/http/middleware"
+	"github.com/kristianrpo/auth-microservice/internal/application/services"
+)
+
+const version = "1.0.0"
+
+// NewRouter creates and configures the main router
+func NewRouter(
+	authService *services.AuthService,
+	oauth2Service *services.OAuth2Service,
+	db *sql.DB,
+	redisClient *redis.Client,
+	logger *zap.Logger,
+) *mux.Router {
+	router := mux.NewRouter()
+
+	docs.SwaggerInfo.Host = ""
+	docs.SwaggerInfo.Schemes = []string{"https", "http"}
+	// BasePath includes API Gateway stage for correct URL generation
+	stage := os.Getenv("API_GATEWAY_STAGE")
+	if stage == "" {
+		stage = "/dev"
+	}
+	docs.SwaggerInfo.BasePath = stage + "/api/auth"
+
+	// Handlers
+	authHandler := shared.NewAuthHandler(authService, logger)
+	oauth2Handler := shared.NewOAuth2Handler(oauth2Service, logger)
+	adminOAuthHandler := shared.NewAdminOAuthClientsHandler(oauth2Service, logger)
+	healthHandler := health.NewHealthHandler(db, redisClient, logger, version)
+
+	// Middleware
+	authMiddleware := middleware.NewAuthMiddleware(authService, logger)
+	roleMiddleware := middleware.NewRoleMiddleware(logger)
+
+	// Global middleware
+	router.Use(middleware.CORSMiddleware)
+	router.Use(middleware.LoggingMiddleware(logger))
+	router.Use(middleware.MetricsMiddleware)
+	router.Use(middleware.RecoveryMiddleware(logger))
+
+	// API auth routes
+	api := router.PathPrefix("/api/auth").Subrouter()
+
+	// Swagger UI bajo /api/auth/swagger/ y spec relativo ./doc.json
+	// (esto hace que funcione tanto detrás de Ingress como en local)
+	api.PathPrefix("/swagger/").Handler(httpSwagger.Handler(
+		httpSwagger.URL("./doc.json"),
+		httpSwagger.DeepLinking(true),
+		httpSwagger.DocExpansion("none"),
+		httpSwagger.DomID("swagger-ui"),
+	))
+
+	// Public routes - Authentication routes
+	api.HandleFunc("/register", auth.Register(authHandler)).Methods(http.MethodPost)
+	api.HandleFunc("/login", auth.Login(authHandler)).Methods(http.MethodPost)
+	api.HandleFunc("/refresh", auth.Refresh(authHandler)).Methods(http.MethodPost)
+
+	// OAuth2 Client Credentials endpoint
+	api.HandleFunc("/token", admin.Token(oauth2Handler)).Methods(http.MethodPost)
+
+	// Protected routes - Authentication required routes
+	protected := api.PathPrefix("/").Subrouter()
+	protected.Use(authMiddleware.Authenticate)
+	protected.HandleFunc("/logout", auth.Logout(authHandler)).Methods(http.MethodPost)
+	protected.HandleFunc("/me", auth.GetMe(authHandler)).Methods(http.MethodGet)
+
+	// Health checks
+	api.HandleFunc("/health", healthHandler.Health).Methods(http.MethodGet)
+	api.HandleFunc("/health/ready", healthHandler.Ready).Methods(http.MethodGet)
+	api.HandleFunc("/health/live", healthHandler.Live).Methods(http.MethodGet)
+
+	// Metrics (Prometheus)
+	api.Handle("/metrics", promhttp.Handler()).Methods(http.MethodGet)
+
+	// Admin routes (require ADMIN role)
+	adminRoutes := api.PathPrefix("/admin").Subrouter()
+	adminRoutes.Use(authMiddleware.Authenticate)
+	adminRoutes.Use(roleMiddleware.RequireAdmin)
+	adminRoutes.HandleFunc("/oauth-clients", admin.CreateOAuthClient(adminOAuthHandler)).Methods(http.MethodPost)
+	adminRoutes.HandleFunc("/oauth-clients", admin.ListOAuthClients(adminOAuthHandler)).Methods(http.MethodGet)
+
+	// Root endpoint route
+	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"service": "auth-microservice",
+			"version": version,
+			"status":  "running",
+		})
+	}).Methods(http.MethodGet)
+
+	return router
+}

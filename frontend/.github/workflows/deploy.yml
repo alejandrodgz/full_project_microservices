@@ -1,0 +1,215 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  TF_BACKEND_BUCKET: ${{ secrets.TF_BACKEND_BUCKET }}
+  TF_BACKEND_KEY: frontend/terraform.tfstate
+  TF_BACKEND_REGION: ${{ secrets.AWS_REGION }}
+  TF_BACKEND_DDB_TABLE: ${{ secrets.TF_BACKEND_DDB_TABLE }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/frontend-app
+          tags: |
+            type=sha,prefix=main-
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  deploy-infrastructure:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get API Gateway URL from Shared Infrastructure
+        id: get_api_url
+        run: |
+          # Obtener el output de la infraestructura compartida desde el state de Terraform
+          aws s3 cp s3://$TF_BACKEND_BUCKET/shared/terraform.tfstate - | \
+            jq -r '.outputs.api_gateway_invoke_url.value' > /tmp/api_url.txt
+          
+          API_GATEWAY_URL=$(cat /tmp/api_url.txt)
+          
+          if [ -z "$API_GATEWAY_URL" ] || [ "$API_GATEWAY_URL" = "null" ]; then
+            echo "Error: No se pudo obtener la URL del API Gateway"
+            exit 1
+          fi
+          
+          echo "API Gateway URL: $API_GATEWAY_URL"
+          echo "api_gateway_url=$API_GATEWAY_URL" >> $GITHUB_OUTPUT
+
+      - name: Update AWS Secrets Manager
+        run: |
+          API_GATEWAY_URL="${{ steps.get_api_url.outputs.api_gateway_url }}"
+          
+          aws secretsmanager put-secret-value \
+            --secret-id frontend-app-secrets \
+            --secret-string "$(jq -n \
+              --arg auth_url "${API_GATEWAY_URL}/api/auth" \
+              --arg docs_url "${API_GATEWAY_URL}/api/docs" \
+              --arg jwt "${{ secrets.JWT_SECRET }}" \
+              --arg env "${{ secrets.NODE_ENV }}" \
+              --arg docker_user "${{ secrets.DOCKERHUB_USERNAME }}" \
+              '{
+                AUTH_BASE_URL: $auth_url,
+                DOCUMENTS_BASE_URL: $docs_url,
+                JWT_SECRET: $jwt,
+                NODE_ENV: $env,
+                DOCKERHUB_USERNAME: $docker_user
+              }')" || true
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: infra/terraform
+        run: |
+          terraform init -input=false -upgrade \
+            -backend-config="bucket=$TF_BACKEND_BUCKET" \
+            -backend-config="key=$TF_BACKEND_KEY" \
+            -backend-config="region=$TF_BACKEND_REGION" \
+            -backend-config="dynamodb_table=$TF_BACKEND_DDB_TABLE" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Validate
+        working-directory: infra/terraform
+        run: terraform validate
+
+      - name: Terraform Apply
+        working-directory: infra/terraform
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}"
+
+      - name: Perform Rolling Update
+        working-directory: infra/terraform
+        run: |
+          INSTANCE_ID=$(terraform output -raw instance_id)
+          PUBLIC_IP=$(terraform output -raw instance_public_ip)
+          SSH_KEY_SECRET=$(terraform output -raw ssh_key_secret_name)
+          
+          echo "=== Performing Rolling Update ==="
+          echo "Instance ID: $INSTANCE_ID"
+          echo "Public IP: $PUBLIC_IP"
+          
+          # Wait for instance to be ready (max 5 minutes)
+          echo "Waiting for instance to be ready..."
+          for i in {1..60}; do
+            INSTANCE_STATE=$(aws ec2 describe-instance-status --instance-ids $INSTANCE_ID \
+              --query 'InstanceStatuses[0].InstanceState.Name' --output text 2>/dev/null || echo "pending")
+            
+            if [ "$INSTANCE_STATE" = "running" ]; then
+              echo "Instance is running"
+              break
+            fi
+            
+            echo "Waiting for instance... ($i/60)"
+            sleep 5
+          done
+          
+          # Wait for SSH to be available (max 3 minutes)
+          echo "Waiting for SSH to be available..."
+          for i in {1..36}; do
+            if timeout 5 bash -c "echo > /dev/tcp/$PUBLIC_IP/22" 2>/dev/null; then
+              echo "SSH is available"
+              break
+            fi
+            echo "Waiting for SSH... ($i/36)"
+            sleep 5
+          done
+          
+          # Download SSH key
+          KEY_FILE=$(mktemp)
+          aws secretsmanager get-secret-value \
+            --secret-id $SSH_KEY_SECRET \
+            --query SecretString \
+            --output text > $KEY_FILE
+          chmod 400 $KEY_FILE
+          
+          # Execute rolling update (or wait for initial deployment)
+          ssh -i $KEY_FILE -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ec2-user@$PUBLIC_IP \
+            'if [ -f /opt/frontend-app/rolling-update.sh ]; then /opt/frontend-app/rolling-update.sh; else echo "Waiting for initial deployment..."; sleep 30; fi' || {
+            echo "Checking container status..."
+            ssh -i $KEY_FILE -o StrictHostKeyChecking=no ec2-user@$PUBLIC_IP \
+              'cd /opt/frontend-app && docker-compose ps' || true
+            rm -f $KEY_FILE
+            echo "Note: Rolling update may have failed if instance is still initializing"
+          }
+          
+          rm -f $KEY_FILE
+          echo "✓ Rolling update attempt completed"
+
+      - name: Display Application URL and Debug Info
+        working-directory: infra/terraform
+        run: |
+          INSTANCE_ID=$(terraform output -raw instance_id)
+          PUBLIC_IP=$(terraform output -raw instance_public_ip)
+          SSH_KEY_SECRET=$(terraform output -raw ssh_key_secret_name)
+          
+          echo "=== Deployment Complete ==="
+          echo "Instance ID: $INSTANCE_ID"
+          echo "Application URL: http://$PUBLIC_IP"
+          echo ""
+          echo "=== SSH Access ==="
+          echo "To connect via SSH, run:"
+          echo "  aws secretsmanager get-secret-value --secret-id $SSH_KEY_SECRET --query SecretString --output text > /tmp/ec2-key.pem"
+          echo "  chmod 400 /tmp/ec2-key.pem"
+          echo "  ssh -i /tmp/ec2-key.pem ec2-user@$PUBLIC_IP"
+          echo ""
+          echo "=== Instance Status ==="
+          aws ec2 describe-instance-status --instance-ids $INSTANCE_ID --query 'InstanceStatuses[0].[InstanceState.Name,SystemStatus.Status,InstanceStatus.Status]' --output text || echo "Instance still initializing..."
+          echo ""
+          echo "=== Useful Commands ==="
+          echo "Check deployment logs:"
+          echo "  sudo tail -f /var/log/user-data.log"
+          echo ""
+          echo "Check Docker containers:"
+          echo "  sudo docker-compose -f /opt/frontend-app/docker-compose.yml ps"
+          echo ""
+          echo "View application logs:"
+          echo "  sudo docker-compose -f /opt/frontend-app/docker-compose.yml logs -f"
+          echo ""
+          echo "Note: The application may take 2-3 minutes to fully start after instance launch."

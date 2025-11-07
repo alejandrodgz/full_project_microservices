@@ -1,0 +1,209 @@
+name: Destroy Shared Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type EXACTLY: DESTROY SHARED to confirm'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  TF_BACKEND_BUCKET: ${{ secrets.TF_BACKEND_BUCKET }}
+  TF_BACKEND_KEY: shared/terraform.tfstate
+  TF_BACKEND_REGION: ${{ secrets.AWS_REGION }}
+  TF_BACKEND_DDB_TABLE: ${{ secrets.TF_BACKEND_DDB_TABLE }}
+
+jobs:
+  destroy-shared:
+    name: Destroy Shared Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm destruction
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DESTROY SHARED" ]; then
+            echo "Confirmation failed. You must type EXACTLY: DESTROY SHARED"
+            exit 1
+          fi
+          echo "Confirmation OK"
+
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=$TF_BACKEND_BUCKET" \
+            -backend-config="key=$TF_BACKEND_KEY" \
+            -backend-config="region=$TF_BACKEND_REGION" \
+            -backend-config="dynamodb_table=$TF_BACKEND_DDB_TABLE" \
+            -reconfigure
+
+      - name: Handle corrupted state from partial destruction
+        working-directory: terraform
+        continue-on-error: true
+        run: |
+          echo "Handling potential corrupted state from partial destruction..."
+          
+          # Check if cluster still exists
+          CLUSTER_EXISTS=$(aws eks describe-cluster --name citizen-dev --region ${{ secrets.AWS_REGION }} 2>/dev/null || echo "not-found")
+          
+          if [ "$CLUSTER_EXISTS" = "not-found" ]; then
+            echo "Cluster doesn't exist but Terraform state has it."
+            echo "Removing EKS-related resources from state to allow destroy..."
+            
+            # Try to remove specific problematic resources first
+            terraform state rm 'module.eks.aws_eks_addon.this["ebs-csi-driver"]' 2>/dev/null || echo "Could not remove ebs-csi-driver addon"
+            terraform state rm 'module.eks.data.aws_eks_addon_version.this["ebs-csi-driver"]' 2>/dev/null || echo "Could not remove addon version data"
+            
+            # If still problems, remove the entire EKS module
+            echo "Attempting to remove entire EKS module from state..."
+            terraform state rm module.eks 2>/dev/null || echo "Could not remove module.eks"
+          fi
+          
+          echo "State cleanup attempted. Proceeding with destroy..."
+
+      - name: Get DynamoDB Table Name
+        working-directory: terraform
+        id: get_table
+        continue-on-error: true
+        run: |
+          TABLE_NAME=$(terraform output -raw rabbitmq_processed_messages_table_name 2>/dev/null || echo "")
+          if [ -n "$TABLE_NAME" ]; then
+            echo "TABLE_NAME=$TABLE_NAME" >> $GITHUB_ENV
+          else
+            echo "No table found or already destroyed"
+            echo "TABLE_NAME=" >> $GITHUB_ENV
+          fi
+
+      - name: Disable PITR before Destroy
+        if: env.TABLE_NAME != ''
+        run: |
+          echo "Disabling Point-in-time Recovery for DynamoDB table: $TABLE_NAME"
+          aws dynamodb update-continuous-backups \
+            --table-name "$TABLE_NAME" \
+            --point-in-time-recovery-specification PointInTimeRecoveryEnabled=false \
+            --region ${{ secrets.AWS_REGION }} || echo "Could not disable PITR (table might not exist or already disabled)"
+          
+          # Wait a moment for the change to propagate
+          sleep 2
+
+      - name: Delete Grafana Ingress (to remove ALB before VPC)
+        continue-on-error: true
+        run: |
+          echo "Deleting Grafana Ingress to remove ALB before destroying VPC..."
+          
+          # Configure kubectl
+          CLUSTER_NAME=$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "")
+          if [ -z "$CLUSTER_NAME" ]; then
+            echo "No cluster found, skipping ingress deletion"
+            exit 0
+          fi
+          
+          # Update kubeconfig
+          if ! aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name "$CLUSTER_NAME" 2>/dev/null; then
+            echo "Could not connect to cluster, skipping ingress deletion"
+            exit 0
+          fi
+          
+          # Delete Grafana Ingress if exists
+          kubectl delete ingress grafana-ingress -n monitoring 2>/dev/null || echo "Grafana Ingress not found"
+          
+          # Wait for ALB to start deleting
+          echo "Waiting for ALB deletion..."
+          sleep 30
+
+      - name: Terraform Destroy (with error handling)
+        working-directory: terraform
+        run: |
+          # Try normal destroy first
+          set +e
+          terraform destroy -auto-approve 2>&1 | tee /tmp/destroy.log
+          DESTROY_EXIT=${PIPESTATUS[0]}
+          set -e
+          
+          # If failed, check the reason
+          if [ $DESTROY_EXIT -ne 0 ]; then
+            echo "Destroy failed (exit code: $DESTROY_EXIT)"
+            
+            # Check for lock error
+            if grep -q "Error acquiring the state lock" /tmp/destroy.log; then
+              echo "Lock error detected. Attempting to unlock..."
+              LOCK_ID=$(grep -oE "ID:\s+[a-f0-9-]{36}" /tmp/destroy.log | head -1 | grep -oE "[a-f0-9-]{36}" | head -1 || echo "")
+              if [ -n "$LOCK_ID" ]; then
+                echo "Force unlocking: $LOCK_ID"
+                terraform force-unlock -force "$LOCK_ID"
+                echo "Retrying destroy..."
+                terraform destroy -auto-approve
+              fi
+            # Check for resources not found (corrupted state)
+            elif grep -E "empty result|NoSuchEntity|not found|ResourceNotFoundException" /tmp/destroy.log; then
+              echo "Resources not found (corrupted state from partial destruction)"
+              echo "Attempting destroy with refresh to fix state..."
+              terraform destroy -auto-approve -refresh=true
+            else
+              # Last resort: destroy without lock (safe in destroy workflow)
+              echo "Unknown error. Attempting destroy without lock..."
+              terraform destroy -auto-approve -lock=false
+            fi
+          else
+            echo "Destroy completed successfully"
+          fi
+
+      - name: Delete S3 backend bucket (with all objects and versions)
+        run: |
+          echo "Deleting all objects and versions from S3 bucket: $TF_BACKEND_BUCKET"
+          
+          # Delete all object versions (for versioned buckets)
+          aws s3api list-object-versions \
+            --bucket "$TF_BACKEND_BUCKET" \
+            --output json > /tmp/versions.json || echo "No objects to delete"
+          
+          # Delete all versions and delete markers
+          if [ -f /tmp/versions.json ]; then
+            cat /tmp/versions.json | jq -r '.Versions[]? | "\(.Key)|\(.VersionId)"' | while read line; do
+              KEY=$(echo "$line" | cut -d'|' -f1)
+              VERSION=$(echo "$line" | cut -d'|' -f2)
+              aws s3api delete-object --bucket "$TF_BACKEND_BUCKET" --key "$KEY" --version-id "$VERSION" 2>/dev/null || true
+            done
+            
+            # Delete delete markers
+            cat /tmp/versions.json | jq -r '.DeleteMarkers[]? | "\(.Key)|\(.VersionId)"' | while read line; do
+              KEY=$(echo "$line" | cut -d'|' -f1)
+              VERSION=$(echo "$line" | cut -d'|' -f2)
+              aws s3api delete-object --bucket "$TF_BACKEND_BUCKET" --key "$KEY" --version-id "$VERSION" 2>/dev/null || true
+            done
+          fi
+          
+          echo "Deleting bucket: $TF_BACKEND_BUCKET"
+          aws s3api delete-bucket --bucket "$TF_BACKEND_BUCKET" --region "$TF_BACKEND_REGION" || true
+
+      - name: Delete DynamoDB lock table
+        run: |
+          aws dynamodb delete-table --table-name "$TF_BACKEND_DDB_TABLE" --region "$TF_BACKEND_REGION" || true
+
+      - name: Delete CloudWatch log group
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          aws logs delete-log-group --log-group-name "/aws/eks/citizen-dev/cluster" --region "$AWS_REGION" || true
+
+      - name: Done
+        run: |
+          echo "Shared infrastructure destroyed"
+          echo "Remember: All microservices depending on this will fail!"

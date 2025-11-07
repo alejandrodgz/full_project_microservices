@@ -1,0 +1,718 @@
+{
+    "schemes": [
+        "http",
+        "https"
+    ],
+    "swagger": "2.0",
+    "info": {
+        "description": "Microservice for managing document uploads, storage, metadata, and authentication workflows\n\nFeatures:\n- Upload documents to S3 with automatic storage in DynamoDB\n- List, retrieve, and delete documents (individual or bulk)\n- Automatic file deduplication based on SHA256 hash\n- Support for multiple file types with MIME type detection\n- Document authentication workflow via RabbitMQ events\n- Transfer documents between operators (generating temporary access links for documents)\n- Event-driven architecture for user transfers and authentication results\n- Health check endpoint",
+        "title": "Document Management Microservice API",
+        "contact": {
+            "name": "API Support",
+            "email": "support@example.com"
+        },
+        "license": {
+            "name": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+        },
+        "version": "1.0"
+    },
+    "basePath": "/",
+    "paths": {
+        "/api/docs/documents": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Retrieves a paginated list of documents for a specific owner (identified by citizen ID).\n\n## Features\n- Returns documents sorted by creation date (most recent first)\n- Supports pagination with configurable page size\n- Includes pagination metadata (total items, total pages, current page)\n- Maximum limit per page: 100 documents\n- Default page size: 10 documents\n\n## Pagination\n- Use `page` parameter to navigate through results (starts at 1)\n- Use `limit` parameter to control page size (1-100)\n- Response includes total count and total pages for UI rendering\n\n## Error Codes\n- `VALIDATION_ERROR`: Invalid id_citizen or pagination parameters\n- `PERSISTENCE_ERROR`: Failed to retrieve documents from database",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "List documents",
+                "parameters": [
+                    {
+                        "minimum": 1,
+                        "type": "integer",
+                        "default": 1,
+                        "example": 1,
+                        "description": "Page number (starts at 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "maximum": 100,
+                        "minimum": 1,
+                        "type": "integer",
+                        "default": 10,
+                        "example": 10,
+                        "description": "Number of items per page (max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of documents retrieved successfully",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.ListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Validation error - invalid id_citizen or pagination parameters",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.ListErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error - database error",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.ListErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Uploads a document to S3 storage and saves its metadata. The owner is determined from JWT token.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Upload a document",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "File to upload",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Document uploaded successfully",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.UploadResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Validation error",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.UploadErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized - invalid or missing token",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.UploadErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.UploadErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/docs/documents/transfer/{id_citizen}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Generates pre-signed URLs for all documents owned by a user for secure transfer to another operator",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Prepare documents for transfer",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Citizen ID",
+                        "name": "id_citizen",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Documents prepared successfully",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.TransferResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.TransferErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.TransferErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/docs/documents/user/delete-all": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deletes all documents belonging to the authenticated user (citizen ID from JWT) and their associated files from S3 storage.\n\n## Features\n- Deletes all document metadata from DynamoDB for the authenticated user\n- Removes all physical files from S3 storage\n- Returns the count of deleted documents\n- Useful for account closure or data migration scenarios\n\n## Use Cases\n- Account closure/deletion\n- Data migration to another system\n- Bulk cleanup operations\n- GDPR/privacy compliance (right to be forgotten)\n\n## Error Codes\n- `VALIDATION_ERROR`: Invalid citizen ID\n- `PERSISTENCE_ERROR`: Failed to delete documents from database",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Delete all documents for the authenticated user",
+                "responses": {
+                    "200": {
+                        "description": "All documents deleted successfully",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.DeleteAllResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Validation error - invalid citizen ID",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.DeleteAllErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error - database or storage error",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.DeleteAllErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/docs/documents/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Retrieves detailed information about a specific document by its ID.\n\n## Features\n- Returns complete document metadata including URL for viewing/downloading\n- URL is pre-signed and ready to use in frontend viewers\n- Includes file information (size, type, hash, etc.)\n\n## Use Cases\n- Display document details in UI\n- Preview documents in viewers (PDF, images, etc.)\n- Download documents\n- Verify document integrity using hash\n\n## Error Codes\n- `NOT_FOUND`: Document with the specified ID does not exist\n- `PERSISTENCE_ERROR`: Failed to retrieve document from database",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Get document by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "example": "123e4567-e89b-12d3-a456-426614174000",
+                        "description": "Document ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Document retrieved successfully",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.GetResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Document not found",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.GetErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error - database error",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.GetErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deletes a document and its associated file from S3 storage.\n\n## Features\n- Deletes document metadata from DynamoDB\n- Removes the physical file from S3 storage\n- Returns 404 if document doesn't exist\n\n## Use Cases\n- Remove unwanted documents\n- Clean up storage space\n- Comply with data deletion requests\n\n## Error Codes\n- `NOT_FOUND`: Document with the specified ID does not exist\n- `PERSISTENCE_ERROR`: Failed to delete document from database",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Delete a document by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "example": "123e4567-e89b-12d3-a456-426614174000",
+                        "description": "Document ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Document deleted successfully",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.DeleteResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Document not found",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.DeleteErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error - database or storage error",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.DeleteErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/docs/documents/{id}/request-authentication": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requests authentication of a document by publishing an event for external authentication service. The document owner's citizen ID and filename are automatically included in the event.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Request document authentication",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Document ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Authentication request accepted",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.RequestAuthenticationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.RequestAuthenticationErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Document not found",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.RequestAuthenticationErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.RequestAuthenticationErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/healthz": {
+            "get": {
+                "description": "Returns the health status of the service. Use this endpoint to verify that the API is running and responsive.\nThis endpoint is useful for:\n- Load balancer health checks\n- Monitoring and alerting systems\n- Kubernetes liveness/readiness probes",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Health check endpoint",
+                "responses": {
+                    "200": {
+                        "description": "Service is healthy and operational",
+                        "schema": {
+                            "$ref": "#/definitions/endpoints.HealthCheckResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "endpoints.DeleteAllData": {
+            "type": "object",
+            "properties": {
+                "deleted_count": {
+                    "type": "integer",
+                    "example": 5
+                }
+            }
+        },
+        "endpoints.DeleteAllErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/shared.ErrorDetail"
+                }
+            }
+        },
+        "endpoints.DeleteAllResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/endpoints.DeleteAllData"
+                },
+                "message": {
+                    "type": "string",
+                    "example": "all documents deleted successfully"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "endpoints.DeleteErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/shared.ErrorDetail"
+                }
+            }
+        },
+        "endpoints.DeleteResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "example": "document deleted successfully"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "endpoints.GetErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/shared.ErrorDetail"
+                }
+            }
+        },
+        "endpoints.GetResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/shared.DocumentResponse"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "endpoints.HealthCheckResponse": {
+            "type": "object",
+            "properties": {
+                "ok": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "endpoints.ListData": {
+            "type": "object",
+            "properties": {
+                "documents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/shared.DocumentResponse"
+                    }
+                },
+                "pagination": {
+                    "$ref": "#/definitions/shared.Pagination"
+                }
+            }
+        },
+        "endpoints.ListErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/shared.ErrorDetail"
+                }
+            }
+        },
+        "endpoints.ListResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/endpoints.ListData"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "endpoints.RequestAuthenticationErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/shared.ErrorDetail"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": false
+                }
+            }
+        },
+        "endpoints.RequestAuthenticationResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "example": "Authentication request submitted successfully"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "endpoints.TransferData": {
+            "type": "object",
+            "properties": {
+                "documents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/shared.TransferDocument"
+                    }
+                },
+                "expires_in": {
+                    "type": "string",
+                    "example": "15m"
+                },
+                "id_citizen": {
+                    "type": "integer",
+                    "example": 123456789
+                },
+                "total_documents": {
+                    "type": "integer",
+                    "example": 5
+                }
+            }
+        },
+        "endpoints.TransferErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/shared.ErrorDetail"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": false
+                }
+            }
+        },
+        "endpoints.TransferResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/endpoints.TransferData"
+                },
+                "message": {
+                    "type": "string",
+                    "example": "Documents prepared for transfer"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "endpoints.UploadErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/shared.ErrorDetail"
+                }
+            }
+        },
+        "endpoints.UploadResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/shared.DocumentResponse"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "shared.DocumentResponse": {
+            "type": "object",
+            "properties": {
+                "authentication_status": {
+                    "type": "string"
+                },
+                "filename": {
+                    "type": "string"
+                },
+                "hash_sha256": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "mime_type": {
+                    "type": "string"
+                },
+                "owner_id": {
+                    "type": "integer"
+                },
+                "size_bytes": {
+                    "type": "integer"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "shared.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "example": "VALIDATION_ERROR"
+                },
+                "message": {
+                    "type": "string",
+                    "example": "invalid request format or validation failed"
+                }
+            }
+        },
+        "shared.Pagination": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "example": 10
+                },
+                "page": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "total_items": {
+                    "type": "integer",
+                    "example": 42
+                },
+                "total_pages": {
+                    "type": "integer",
+                    "example": 5
+                }
+            }
+        },
+        "shared.TransferDocument": {
+            "type": "object",
+            "properties": {
+                "expires_at": {
+                    "type": "string",
+                    "example": "2025-10-14T15:30:00Z"
+                },
+                "filename": {
+                    "type": "string",
+                    "example": "passport.pdf"
+                },
+                "hash_sha256": {
+                    "type": "string",
+                    "example": "a1b2c3d4e5f6..."
+                },
+                "id": {
+                    "type": "string",
+                    "example": "123e4567-e89b-12d3-a456-426614174000"
+                },
+                "mime_type": {
+                    "type": "string",
+                    "example": "application/pdf"
+                },
+                "presigned_url": {
+                    "type": "string",
+                    "example": "https://s3.amazonaws.com/bucket/key?signature=..."
+                },
+                "size_bytes": {
+                    "type": "integer",
+                    "example": 1048576
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "description": "Type \"Bearer \u003ctoken\u003e\" (include the word Bearer followed by a space)",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

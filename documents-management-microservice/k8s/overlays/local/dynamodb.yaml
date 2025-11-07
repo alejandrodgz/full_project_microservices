@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dynamodb-local-data
+  namespace: documents
+  labels: { app: dynamodb-local }
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Si tu cluster tiene un storageClass específico (ej. "standard", "local-path"), descomenta la siguiente línea:
+  # storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dynamodb-local
+  namespace: documents
+  labels: { app: dynamodb-local }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: dynamodb-local }
+  template:
+    metadata:
+      labels: { app: dynamodb-local }
+    spec:
+      containers:
+        - name: dynamodb
+          image: amazon/dynamodb-local:latest
+          # Quitamos -inMemory y agregamos -dbPath apuntando al volumen persistente
+          args: ["-jar", "DynamoDBLocal.jar", "-dbPath", "/home/dynamodblocal/data", "-sharedDb"]
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: dynamodb-data
+              mountPath: /home/dynamodblocal/data
+      volumes:
+        - name: dynamodb-data
+          persistentVolumeClaim:
+            claimName: dynamodb-local-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamodb-local
+  namespace: documents
+  labels: { app: dynamodb-local }
+spec:
+  type: ClusterIP
+  selector: { app: dynamodb-local }
+  ports:
+    - name: dynamodb
+      port: 8000
+      targetPort: 8000
+---
+# Job para verificar que DynamoDB Local esté disponible
+# Las tablas se crean automáticamente por la aplicación al iniciar
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dynamodb-health-check
+  namespace: documents
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: aws-cli
+          image: amazon/aws-cli:latest
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: "admin"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "admin123"
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+          command: ["sh", "-c"]
+          args:
+            - |
+              ENDPOINT="http://dynamodb-local.documents.svc.cluster.local:8000"
+              
+              echo "Esperando a que DynamoDB Local esté disponible..."
+              for i in $(seq 1 30); do
+                if aws dynamodb list-tables --endpoint-url "${ENDPOINT}" --region us-east-1 >/dev/null 2>&1; then
+                  echo "✓ DynamoDB Local listo"
+                  break
+                fi
+                echo "Aún no responde, reintentando..."
+                sleep 2
+              done
+              
+              echo "✓ Las tablas se crearán automáticamente cuando la aplicación inicie:"
+              echo "  - Documents (tabla principal de documentos)"
+              echo "  - Documents_processed_messages (idempotencia)"

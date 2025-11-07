@@ -1,0 +1,74 @@
+version: "2"
+
+run:
+  timeout: 3m
+  tests: true
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - unused
+    - revive
+    - gocyclo
+    - dupl
+    - misspell
+    - unparam
+    - prealloc
+    - gosec
+    - nolintlint
+  disable:
+    - wsl
+    - funlen
+
+  settings:
+    gocyclo:
+      min-complexity: 15
+    dupl:
+      threshold: 100
+    misspell:
+      locale: US
+    revive:
+      confidence: 0.8
+      severity: warning
+    gosec:
+      excludes: [G304, G107]
+
+  exclusions:
+    paths:
+      - "^vendor/"
+      - "^build/"
+      - "^dist/"
+      - ".*mocks\\.go"
+      - ".*_test\\.go" 
+    rules:
+      - text: "should have comment"
+        linters: [revive]
+        path: ".*"
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofumpt:
+      extra-rules: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-dirs:
+    - docs
+
+output:
+  formats:
+    json:
+      path: stderr
+    checkstyle:
+      path: report.xml
+    text:
+      path: stdout
+      colors: true
+      print-issued-lines: true
+      print-linter-name: true

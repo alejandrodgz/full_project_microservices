@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'documents-microservice'
+
+# Rule files
+rule_files:
+  - '/etc/prometheus/alerts.yml'
+
+scrape_configs:
+  # Documents Go application metrics
+  - job_name: 'documents-service'
+    static_configs:
+      - targets: ['documents-service:8080']
+    metrics_path: '/metrics'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
