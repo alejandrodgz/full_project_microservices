@@ -7,6 +7,7 @@ echo "🚀 Starting Django application..."
 echo "⏳ Waiting for database..."
 
 # Extract database info from DATABASE_URL or use individual env vars
+# Extract database info from DATABASE_URL or use individual env vars
 if [ -n "$DATABASE_URL" ]; then
     # Parse DATABASE_URL: mysql://user:pass@host:port/dbname
     DB_HOST=$(echo $DATABASE_URL | sed -n 's/.*@\([^:]*\):.*/\1/p')
@@ -14,10 +15,17 @@ if [ -n "$DATABASE_URL" ]; then
     DB_NAME=$(echo $DATABASE_URL | sed -n 's/.*\/\([^?]*\).*/\1/p')
     DB_USER=$(echo $DATABASE_URL | sed -n 's/.*:\/\/\([^:]*\):.*/\1/p')
     DB_PASSWORD=$(echo $DATABASE_URL | sed -n 's/.*:\/\/[^:]*:\([^@]*\)@.*/\1/p')
+else
+    # Use individual environment variables
+    DB_HOST=${DATABASE_HOST:-db}
+    DB_PORT=${DATABASE_PORT:-3306}
+    DB_NAME=${DATABASE_NAME:-affiliation_db}
+    DB_USER=${DATABASE_USER:-affiliation_user}
+    DB_PASSWORD=${DATABASE_PASSWORD:-affiliation_password}
 fi
 
-max_retries=30
-retry_interval=2
+max_retries=60
+retry_interval=3
 
 for i in $(seq 1 $max_retries); do
     if python3 -c "import MySQLdb; MySQLdb.connect(host='${DB_HOST}', user='${DB_USER}', passwd='${DB_PASSWORD}', db='${DB_NAME}', port=${DB_PORT:-3306})" 2>/dev/null; then

@@ -202,10 +202,10 @@ print_info "Building and starting Affiliation service..."
 docker compose up -d --build
 
 print_info "Waiting for database and migrations to complete..."
-print_info "This may take up to 60 seconds..."
+print_info "This may take up to 180 seconds..."
 
 # Wait for the web service to be ready and migrations to complete
-max_attempts=30
+max_attempts=90
 attempt=0
 while [ $attempt -lt $max_attempts ]; do
     # Check if the auth_user table exists (created by Django migrations)
