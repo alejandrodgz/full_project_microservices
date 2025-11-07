@@ -183,9 +183,9 @@ DEBUG=True
 SECRET_KEY=django-insecure-development-key-change-in-production
 ALLOWED_HOSTS=localhost,127.0.0.1,affiliation-web
 DATABASE_ENGINE=django.db.backends.mysql
-DATABASE_NAME=affiliation_db
-DATABASE_USER=affiliation_user
-DATABASE_PASSWORD=affiliation_password
+DATABASE_NAME=citizen_affiliation
+DATABASE_USER=djangouser
+DATABASE_PASSWORD=djangopass
 DATABASE_HOST=affiliation-db
 DATABASE_PORT=3306
 REDIS_HOST=affiliation-redis
@@ -194,6 +194,12 @@ RABBITMQ_HOST=affiliation-rabbitmq
 RABBITMQ_PORT=5672
 RABBITMQ_USER=admin
 RABBITMQ_PASSWORD=admin
+
+# MySQL container environment variables
+MYSQL_ROOT_PASSWORD=rootpassword
+MYSQL_DATABASE=citizen_affiliation
+MYSQL_USER=djangouser
+MYSQL_PASSWORD=djangopass
 ENV_EOF
     print_success ".env file created"
 fi
