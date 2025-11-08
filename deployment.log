@@ -1,0 +1,354 @@
+[0;35m
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║   🚀 KUBERNETES MINIKUBE DEPLOYMENT 🚀                        ║
+║                                                               ║
+║   This script will:                                           ║
+║   1. Check prerequisites (minikube, kubectl, docker)          ║
+║   2. Start minikube cluster                                   ║
+║   3. Build Docker images using minikube's Docker daemon       ║
+║   4. Deploy namespace and secrets                             ║
+║   5. Deploy RabbitMQ (shared message broker)                  ║
+║   6. Deploy Affiliation service (Django + MariaDB + Redis)    ║
+║   7. Deploy Auth service (Go + PostgreSQL + Redis)            ║
+║   8. Deploy Documents service (Go + DynamoDB + MinIO)         ║
+║   9. Deploy Monitoring stack (Prometheus + Grafana)           ║
+║   10. Deploy Frontend (Next.js)                               ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+[0m
+
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m🔍 Step 1/11: Checking Prerequisites[0m
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;32m✅ minikube found (v1.37.0)[0m
+[0;32m✅ kubectl found (Client Version: v1.34.1
+Kustomize Version: v5.7.1)[0m
+[0;32m✅ Docker found[0m
+
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m🎯 Step 2/11: Starting Minikube Cluster[0m
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;32m✅ Minikube is already running[0m
+Switched to context "minikube".
+[0;32m✅ kubectl configured to use minikube context[0m
+[1;33mℹ️  Enabling minikube addons...[0m
+* ingress is an addon maintained by Kubernetes. For any concerns contact minikube on GitHub.
+You can view the list of minikube maintainers at: https://github.com/kubernetes/minikube/blob/master/OWNERS
+  - Using image registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.6.2
+  - Using image registry.k8s.io/ingress-nginx/controller:v1.13.2
+  - Using image registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.6.2
+* Verifying ingress addon...
+* The 'ingress' addon is enabled
+* metrics-server is an addon maintained by Kubernetes. For any concerns contact minikube on GitHub.
+You can view the list of minikube maintainers at: https://github.com/kubernetes/minikube/blob/master/OWNERS
+  - Using image registry.k8s.io/metrics-server/metrics-server:v0.8.0
+* The 'metrics-server' addon is enabled
+[0;32m✅ Minikube addons enabled[0m
+
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m🐳 Step 3/11: Building Docker Images[0m
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[1;33mℹ️  Configuring shell to use minikube's Docker daemon...[0m
+[0;32m✅ Docker environment configured[0m
+[1;33mℹ️  Building Affiliation service image...[0m
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.71kB done
+#1 DONE 0.0s
+
+#2 [auth] library/python:pull token for registry-1.docker.io
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/python:3.12-slim
+#3 DONE 0.9s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 574B done
+#4 DONE 0.0s
+
+#5 [builder 1/5] FROM docker.io/library/python:3.12-slim@sha256:d86b4c74b936c438cd4cc3a9f7256b9a7c27ad68c7caf8c205e18d9845af0164
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 transferring context: 5.48kB done
+#6 DONE 0.0s
+
+#7 [stage-1 10/11] RUN useradd -m -u 1000 django &&     chown -R django:django /app
+#7 CACHED
+
+#8 [stage-1  3/11] RUN apt-get update && apt-get install -y     default-libmysqlclient-dev     && rm -rf /var/lib/apt/lists/*
+#8 CACHED
+
+#9 [stage-1  8/11] RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+#9 CACHED
+
+#10 [builder 4/5] COPY requirements/base.txt requirements/
+#10 CACHED
+
+#11 [stage-1  9/11] RUN mkdir -p logs
+#11 CACHED
+
+#12 [builder 2/5] WORKDIR /app
+#12 CACHED
+
+#13 [stage-1  4/11] COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+#13 CACHED
+
+#14 [builder 3/5] RUN apt-get update && apt-get install -y     gcc     default-libmysqlclient-dev     pkg-config     && rm -rf /var/lib/apt/lists/*
+#14 CACHED
+
+#15 [stage-1  6/11] COPY . .
+#15 CACHED
+
+#16 [stage-1  5/11] COPY --from=builder /usr/local/bin /usr/local/bin
+#16 CACHED
+
+#17 [stage-1  7/11] COPY docker-entrypoint.sh /usr/local/bin/
+#17 CACHED
+
+#18 [builder 5/5] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir -r requirements/base.txt
+#18 CACHED
+
+#19 [stage-1 11/11] WORKDIR /app
+#19 CACHED
+
+#20 exporting to image
+#20 exporting layers done
+#20 writing image sha256:0d470ba88bac5cea799e35b23a9b9daed221d595694dd03efc291780de1e7917 done
+#20 naming to docker.io/library/affiliation-service:latest done
+#20 DONE 0.0s
+[0;32m✅ Affiliation service image built[0m
+[1;33mℹ️  Building Auth service image...[0m
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 742B done
+#1 DONE 0.0s
+
+#2 [auth] library/alpine:pull token for registry-1.docker.io
+#2 DONE 0.0s
+
+#3 [auth] library/golang:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#4 [internal] load metadata for docker.io/library/golang:1.25-alpine
+#4 DONE 0.7s
+
+#5 [internal] load metadata for docker.io/library/alpine:latest
+#5 DONE 0.7s
+
+#6 [internal] load .dockerignore
+#6 transferring context: 646B done
+#6 DONE 0.0s
+
+#7 [builder 1/8] FROM docker.io/library/golang:1.25-alpine@sha256:d3f0cf7723f3429e3f9ed846243970b20a2de7bae6a5b66fc5914e228d831bbb
+#7 DONE 0.0s
+
+#8 [stage-1 1/4] FROM docker.io/library/alpine:latest@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
+#8 DONE 0.0s
+
+#9 [internal] load build context
+#9 transferring context: 11.94kB 0.0s done
+#9 DONE 0.0s
+
+#10 [builder 6/8] COPY . .
+#10 CACHED
+
+#11 [builder 4/8] COPY go.mod ./
+#11 CACHED
+
+#12 [stage-1 3/4] WORKDIR /root/
+#12 CACHED
+
+#13 [stage-1 2/4] RUN apk --no-cache add ca-certificates
+#13 CACHED
+
+#14 [builder 7/8] RUN go mod tidy
+#14 CACHED
+
+#15 [builder 8/8] RUN CGO_ENABLED=0 GOOS=linux go build -o server cmd/server/main.go
+#15 CACHED
+
+#16 [builder 3/8] RUN apk --no-cache add git
+#16 CACHED
+
+#17 [builder 2/8] WORKDIR /app
+#17 CACHED
+
+#18 [builder 5/8] RUN go mod download
+#18 CACHED
+
+#19 [stage-1 4/4] COPY --from=builder /app/server .
+#19 CACHED
+
+#20 exporting to image
+#20 exporting layers done
+#20 writing image sha256:f38ce4784ddf0f17e97f755ab19a695031dbd1776f84059d022b630fd6b13864 done
+#20 naming to docker.io/library/auth-service:latest done
+#20 DONE 0.0s
+[0;32m✅ Auth service image built[0m
+[1;33mℹ️  Building Documents service image...[0m
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 719B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/golang:1.25-alpine
+#2 ...
+
+#3 [internal] load metadata for docker.io/library/alpine:latest
+#3 DONE 0.2s
+
+#2 [internal] load metadata for docker.io/library/golang:1.25-alpine
+#2 DONE 0.2s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 334B done
+#4 DONE 0.0s
+
+#5 [builder 1/8] FROM docker.io/library/golang:1.25-alpine@sha256:d3f0cf7723f3429e3f9ed846243970b20a2de7bae6a5b66fc5914e228d831bbb
+#5 DONE 0.0s
+
+#6 [stage-1 1/4] FROM docker.io/library/alpine:latest@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
+#6 DONE 0.0s
+
+#7 [internal] load build context
+#7 transferring context: 12.51kB 0.0s done
+#7 DONE 0.0s
+
+#8 [builder 7/8] RUN go mod tidy
+#8 CACHED
+
+#9 [stage-1 3/4] WORKDIR /root/
+#9 CACHED
+
+#10 [builder 8/8] RUN CGO_ENABLED=0 GOOS=linux go build -o server cmd/server/main.go
+#10 CACHED
+
+#11 [stage-1 2/4] RUN apk --no-cache add ca-certificates
+#11 CACHED
+
+#12 [builder 4/8] COPY go.mod ./
+#12 CACHED
+
+#13 [builder 2/8] WORKDIR /app
+#13 CACHED
+
+#14 [builder 6/8] COPY . .
+#14 CACHED
+
+#15 [builder 3/8] RUN apk --no-cache add git
+#15 CACHED
+
+#16 [builder 5/8] RUN go mod download
+#16 CACHED
+
+#17 [stage-1 4/4] COPY --from=builder /app/server .
+#17 CACHED
+
+#18 exporting to image
+#18 exporting layers done
+#18 writing image sha256:45fb4ff00708c0146c415e7da835cb23ead3b030ec264b28abd7ceef29a97a2e done
+#18 naming to docker.io/library/documents-service:latest 0.0s done
+#18 DONE 0.0s
+[0;32m✅ Documents service image built[0m
+[1;33mℹ️  Building Frontend image...[0m
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 731B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:20-alpine
+#2 DONE 0.3s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [builder 1/6] FROM docker.io/library/node:20-alpine@sha256:6178e78b972f79c335df281f4b7674a2d85071aae2af020ffa39f0a770265435
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 1.77MB 1.3s done
+#5 DONE 1.3s
+
+#6 [builder 2/6] WORKDIR /app
+#6 CACHED
+
+#7 [builder 3/6] COPY package*.json ./
+#7 CACHED
+
+#8 [builder 5/6] COPY . .
+#8 CACHED
+
+#9 [runner 3/6] COPY --from=builder /app/package*.json ./
+#9 CACHED
+
+#10 [runner 5/6] COPY --from=builder /app/public ./public
+#10 CACHED
+
+#11 [builder 6/6] RUN npm run build
+#11 CACHED
+
+#12 [builder 4/6] RUN npm ci
+#12 CACHED
+
+#13 [runner 4/6] COPY --from=builder /app/.next ./.next
+#13 CACHED
+
+#14 [runner 6/6] COPY --from=builder /app/node_modules ./node_modules
+#14 CACHED
+
+#15 exporting to image
+#15 exporting layers done
+#15 writing image sha256:9225a4c7ad11d36f68c17821e14b6492b8f044d28f0a5000bc11eb488b7bf825 done
+#15 naming to docker.io/library/frontend:latest 0.0s done
+#15 DONE 0.0s
+[0;32m✅ Frontend image built[0m
+
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m📦 Step 4/11: Deploying Base Resources (Namespace & Secrets)[0m
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+namespace/microservices created
+secret/jwt-secret created
+secret/rabbitmq-secret created
+secret/postgres-secret created
+secret/redis-auth-secret created
+secret/mariadb-secret created
+secret/minio-secret created
+secret/dynamodb-secret created
+secret/grafana-secret created
+[0;32m✅ Namespace and secrets deployed[0m
+
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m🐰 Step 5/11: Deploying RabbitMQ (Shared Message Broker)[0m
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+service/rabbitmq created
+statefulset.apps/rabbitmq created
+[1;33mℹ️  Waiting for RabbitMQ to be ready...[0m
+pod/rabbitmq-0 condition met
+[0;32m✅ RabbitMQ deployed and ready[0m
+
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m📊 Step 6/11: Deploying Affiliation Service[0m
+[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[1;33mℹ️  Deploying Affiliation databases (MariaDB & Redis)...[0m
+service/affiliation-db created
+statefulset.apps/affiliation-db created
+service/affiliation-redis created
+deployment.apps/affiliation-redis created
+[1;33mℹ️  Waiting for databases to be ready...[0m
+pod/affiliation-db-0 condition met
+pod/affiliation-redis-7b6d9b74f7-gnvl4 condition met
+[0;32m✅ Affiliation databases ready[0m
+[1;33mℹ️  Running database migrations and creating service users...[0m
+configmap/affiliation-config created
+service/affiliation-service created
+deployment.apps/affiliation-service created
+deployment.apps/affiliation-document-consumer created
+job.batch/affiliation-migrations created
+error: timed out waiting for the condition on jobs/affiliation-migrations

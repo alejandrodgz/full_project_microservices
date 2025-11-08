@@ -1,0 +1,229 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamodb-local
+  namespace: microservices
+  labels:
+    app: dynamodb-local
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8096
+      targetPort: 8096
+      name: dynamodb
+  selector:
+    app: dynamodb-local
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dynamodb-local
+  namespace: microservices
+  labels:
+    app: dynamodb-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dynamodb-local
+  template:
+    metadata:
+      labels:
+        app: dynamodb-local
+    spec:
+      containers:
+      - name: dynamodb
+        image: amazon/dynamodb-local:latest
+        args: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb", "-port", "8096"]
+        ports:
+        - containerPort: 8096
+          name: dynamodb
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: microservices
+  labels:
+    app: minio
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: api
+    - port: 9001
+      targetPort: 9001
+      name: console
+  selector:
+    app: minio
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: microservices
+  labels:
+    app: minio
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        command:
+        - minio
+        - server
+        - /data
+        - --console-address
+        - ":9001"
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: MINIO_ROOT_USER
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: MINIO_ROOT_PASSWORD
+        volumeMounts:
+        - name: minio-data
+          mountPath: /data
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+  volumeClaimTemplates:
+  - metadata:
+      name: minio-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dynamodb-init
+  namespace: microservices
+  labels:
+    app: dynamodb-init
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-for-dynamodb
+        image: busybox:1.36
+        command: ['sh', '-c', 'until nc -z dynamodb-local 8096; do echo waiting for dynamodb; sleep 2; done; sleep 5;']
+      containers:
+      - name: dynamodb-init
+        image: amazon/aws-cli:latest
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: dynamodb-secret
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: dynamodb-secret
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_DEFAULT_REGION
+          valueFrom:
+            secretKeyRef:
+              name: dynamodb-secret
+              key: AWS_REGION
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Creating Documents table..."
+          aws dynamodb create-table \
+            --table-name Documents \
+            --attribute-definitions \
+              AttributeName=DocumentID,AttributeType=S \
+              AttributeName=OwnerID,AttributeType=N \
+              AttributeName=HashSHA256,AttributeType=S \
+            --key-schema \
+              AttributeName=DocumentID,KeyType=HASH \
+              AttributeName=OwnerID,KeyType=RANGE \
+            --provisioned-throughput \
+              ReadCapacityUnits=5,WriteCapacityUnits=5 \
+            --global-secondary-indexes \
+              '[{"IndexName":"OwnerIDIndex","KeySchema":[{"AttributeName":"OwnerID","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"},"ProvisionedThroughput":{"ReadCapacityUnits":5,"WriteCapacityUnits":5}},{"IndexName":"HashOwnerIndex","KeySchema":[{"AttributeName":"HashSHA256","KeyType":"HASH"},{"AttributeName":"OwnerID","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"},"ProvisionedThroughput":{"ReadCapacityUnits":5,"WriteCapacityUnits":5}}]' \
+            --endpoint-url http://dynamodb-local:8096 \
+            --region us-east-1 || echo "Table already exists"
+          echo "DynamoDB initialization complete"
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: microservices
+  labels:
+    app: minio-init
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-for-minio
+        image: busybox:1.36
+        command: ['sh', '-c', 'until nc -z minio 9000; do echo waiting for minio; sleep 2; done; sleep 5;']
+      containers:
+      - name: minio-init
+        image: minio/mc:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          mc alias set myminio http://minio:9000 admin admin123
+          mc mb myminio/documents --ignore-existing
+          mc anonymous set download myminio/documents
+          echo "MinIO initialization complete"

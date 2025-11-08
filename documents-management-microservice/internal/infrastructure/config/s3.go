@@ -53,5 +53,28 @@ func NewS3Client(ctx context.Context, cfg Config) (*storage.S3Client, error) {
 
 	s3APIClient := s3.NewFromConfig(awsConfig, clientOptions...)
 
-	return storage.NewS3Client(cfg.S3Bucket, cfg.S3PublicBase, s3APIClient), nil
+	s3Client := storage.NewS3Client(cfg.S3Bucket, cfg.S3PublicBase, s3APIClient)
+
+	// If a public base URL is configured, create a separate client for presigning
+	// This ensures presigned URLs use the public endpoint and generate valid signatures
+	if cfg.S3PublicBase != "" {
+		publicEndpointURL, err := url.Parse(cfg.S3PublicBase)
+		if err == nil {
+			// Extract just the scheme + host from the public base URL (e.g., http://localhost:9000)
+			publicEndpoint := fmt.Sprintf("%s://%s", publicEndpointURL.Scheme, publicEndpointURL.Host)
+			
+			presignClientOptions := []func(*s3.Options){
+				func(options *s3.Options) {
+					options.BaseEndpoint = aws.String(publicEndpoint)
+					options.Region = cfg.AWSRegion
+					options.UsePathStyle = cfg.S3UsePath
+				},
+			}
+			
+			presignAPIClient := s3.NewFromConfig(awsConfig, presignClientOptions...)
+			s3Client.SetPresignClient(presignAPIClient)
+		}
+	}
+
+	return s3Client, nil
 }

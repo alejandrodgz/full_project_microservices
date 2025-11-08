@@ -17,19 +17,27 @@ import (
 
 // S3Client implements the ObjectStorage interface using AWS S3 or compatible storage (MinIO)
 type S3Client struct {
-	bucketName    string
-	publicBaseURL string
-	s3Client      *s3.Client
-	ensureOnce    sync.Once
+	bucketName       string
+	publicBaseURL    string
+	s3Client         *s3.Client
+	presignS3Client  *s3.Client // Separate client for presigning with public endpoint
+	ensureOnce       sync.Once
 }
 
 // NewS3Client creates a new S3 client for object storage operations
 func NewS3Client(bucketName, publicBaseURL string, s3APIClient *s3.Client) *S3Client {
 	return &S3Client{
-		bucketName:    bucketName,
-		publicBaseURL: publicBaseURL,
-		s3Client:      s3APIClient,
+		bucketName:      bucketName,
+		publicBaseURL:   publicBaseURL,
+		s3Client:        s3APIClient,
+		presignS3Client: s3APIClient, // Default to same client
 	}
+}
+
+// SetPresignClient sets a separate S3 client for generating presigned URLs
+// This is useful when the internal endpoint differs from the public endpoint
+func (client *S3Client) SetPresignClient(presignClient *s3.Client) {
+	client.presignS3Client = presignClient
 }
 
 // Put uploads an object to S3 with the specified key and content type
@@ -100,7 +108,7 @@ func (client *S3Client) Delete(ctx context.Context, objectKey string) error {
 
 // GeneratePresignedURL creates a temporary pre-signed URL for secure access to an object
 func (client *S3Client) GeneratePresignedURL(ctx context.Context, objectKey string, expiration time.Duration) (string, error) {
-	presignClient := s3.NewPresignClient(client.s3Client)
+	presignClient := s3.NewPresignClient(client.presignS3Client)
 
 	request, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(client.bucketName),

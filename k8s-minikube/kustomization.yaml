@@ -1,0 +1,48 @@
+# Kustomization file for deploying all resources
+# Usage: kubectl apply -k k8s-minikube/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: microservices
+
+resources:
+  # Base resources (must be first)
+  - base/namespace.yaml
+  - base/secrets.yaml
+  - base/rabbitmq.yaml
+  
+  # Affiliation service
+  - affiliation/databases.yaml
+  - affiliation/deployment.yaml
+  
+  # Auth service
+  - auth/databases.yaml
+  - auth/deployment.yaml
+  
+  # Documents service
+  - documents/databases.yaml
+  - documents/deployment.yaml
+  
+  # Monitoring
+  - monitoring/monitoring.yaml
+  
+  # Frontend
+  - frontend/deployment.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/part-of: connectivity-platform
+  app.kubernetes.io/managed-by: kustomize
+  environment: development
+
+# Images (can be overridden for production)
+images:
+  - name: affiliation-service
+    newTag: latest
+  - name: auth-service
+    newTag: latest
+  - name: documents-service
+    newTag: latest
+  - name: frontend
+    newTag: latest
